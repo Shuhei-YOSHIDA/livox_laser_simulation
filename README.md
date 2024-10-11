@@ -27,13 +27,13 @@ A package to provide plug-in for [Livox Series LiDAR](https://www.livoxtech.com)
 
 > Note that the version of gazebo in main branch is gazebo 9.18. If you use gazebo 7, checkout to "gazebo7" branch.
 
-Before you write your urdf file by using this plugin, catkin_make/catkin build is needed.
+Before you write your urdf file by using this plugin, colcon build is needed.
 
 A simple demo is shown in livox_simulation.launch
 
 Run 
 ```
-    roslaunch livox_laser_simulation livox_simulation.launch
+    ros2 launch livox_laser_simulation livox_simulation.launch
 ```
 to see.
 
