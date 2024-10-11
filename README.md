@@ -2,9 +2,9 @@
 A package to provide plug-in for [Livox Series LiDAR](https://www.livoxtech.com).
 
 ## Requirements
-- ROS(=Melodic)
-- Gazebo (= 9.x, http://gazebosim.org/)
-- Ubuntu(=18.04)
+- ROS(=humble)
+- Gazebo (= 11, http://gazebosim.org/)
+- Ubuntu(=22.04)
 
 ## Results
 - avia
