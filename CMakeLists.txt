@@ -69,6 +69,7 @@ install (DIRECTORY
   worlds
   launch
   scan_mode
+  rviz
   DESTINATION share/${PROJECT_NAME}
 )
 
