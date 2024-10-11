@@ -3,14 +3,21 @@
 //
 
 #include "livox_laser_simulation/livox_points_plugin.h"
-#include <ros/ros.h>
-#include <sensor_msgs/PointCloud.h>
+#include <sensor_msgs/msg/point_cloud.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud_conversion.hpp>
 #include <gazebo/physics/Model.hh>
 #include <gazebo/physics/MultiRayShape.hh>
 #include <gazebo/physics/PhysicsEngine.hh>
 #include <gazebo/physics/World.hh>
 #include <gazebo/sensors/RaySensor.hh>
 #include <gazebo/transport/Node.hh>
+#include <gazebo_ros/node.hpp>
+#include <gazebo_ros/utils.hpp>
+#include <gazebo_ros/conversions/sensor_msgs.hpp>
+#include <tf2_ros/transform_broadcaster.h>
+#include <ament_index_cpp/get_package_prefix.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
 #include "livox_laser_simulation/csv_reader.hpp"
 #include "livox_laser_simulation/livox_ode_multiray_shape.h"
 
@@ -18,9 +25,25 @@ namespace gazebo {
 
 GZ_REGISTER_SENSOR_PLUGIN(LivoxPointsPlugin)
 
-LivoxPointsPlugin::LivoxPointsPlugin() {}
+class LivoxPointsPluginPrivate
+{
+public:
+    gazebo_ros::Node::SharedPtr _ros_node;
 
-LivoxPointsPlugin::~LivoxPointsPlugin() {}
+    void PublishPointCloud2();
+    std::string _frame_name;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr _pub;
+    std::unique_ptr<tf2_ros::TransformBroadcaster> _tf_bro;
+
+};
+
+LivoxPointsPlugin::LivoxPointsPlugin()
+    : _impl(std::make_unique<LivoxPointsPluginPrivate>())
+{}
+
+LivoxPointsPlugin::~LivoxPointsPlugin()
+{
+}
 
 void convertDataToRotateInfo(const std::vector<std::vector<double>> &datas, std::vector<AviaRotateInfo> &avia_infos) {
     avia_infos.reserve(datas.size());
@@ -32,17 +55,53 @@ void convertDataToRotateInfo(const std::vector<std::vector<double>> &datas, std:
             avia_infos.back().azimuth = data[1] * deg_2_rad;
             avia_infos.back().zenith = data[2] * deg_2_rad - M_PI_2;  //转化成标准的右手系角度
         } else {
-            ROS_INFO_STREAM("data size is not 3!");
+            //ROS_INFO_STREAM("data size is not 3!");
         }
     }
 }
 
+std::string retrieveName(const std::string& url)
+{
+  std::string mod_url = url;
+  if (url.find("package://") == 0) {
+    mod_url.erase(0, strlen("package://"));
+    size_t pos = mod_url.find("/");
+    if (pos == std::string::npos) {
+      throw std::runtime_error("Could not parse package:// format into file:// format");
+    }
+
+    std::string package = mod_url.substr(0, pos);
+    if (package.empty()) {
+      throw std::runtime_error("Package name must not be empty");
+    }
+    mod_url.erase(0, pos);
+    std::string package_path;
+    try {
+      package_path = ament_index_cpp::get_package_share_directory(package);
+    } catch (const ament_index_cpp::PackageNotFoundError &) {
+      throw std::runtime_error(("Package [" + package + "] does not exist"));
+    }
+
+    //mod_url = "file://" + package_path + mod_url;
+    mod_url = package_path + mod_url;
+  }
+
+  return mod_url;
+}
+
 void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr sdf) {
+    // ROS2 node
+    _impl->_ros_node = gazebo_ros::Node::Get(sdf);
+    _impl->_tf_bro = std::make_unique<tf2_ros::TransformBroadcaster>(_impl->_ros_node);
+
     std::vector<std::vector<double>> datas;
     std::string file_name = sdf->Get<std::string>("csv_file_name");
-    ROS_INFO_STREAM("load csv file name:" << file_name);
+    RCLCPP_INFO_STREAM(_impl->_ros_node->get_logger(), "load csv file name:" << file_name);
+    std::cout << "load csv file name:" << file_name << std::endl;
+    file_name = retrieveName(file_name);
     if (!CsvReader::ReadCsvFile(file_name, datas)) {
-        ROS_INFO_STREAM("cannot get csv file!" << file_name << "will return !");
+        RCLCPP_INFO_STREAM(_impl->_ros_node->get_logger(),
+                "cannot get csv file!" << file_name << "will return !");
         return;
     }
     sdfPtr = sdf;
@@ -53,10 +112,14 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     int argc = 0;
     char **argv = nullptr;
     auto curr_scan_topic = sdf->Get<std::string>("ros_topic");
-    ROS_INFO_STREAM("ros topic name:" << curr_scan_topic);
-    ros::init(argc, argv, curr_scan_topic);
-    rosNode.reset(new ros::NodeHandle);
-    rosPointPub = rosNode->advertise<sensor_msgs::PointCloud>(curr_scan_topic, 5);
+    RCLCPP_INFO_STREAM(_impl->_ros_node->get_logger(), "ros topic name:" << curr_scan_topic);
+
+    // ROS2 publisher
+    const gazebo_ros::QoS & qos = _impl->_ros_node->get_qos();
+    rclcpp::QoS pub_qos = qos.get_publisher_qos(curr_scan_topic, rclcpp::SensorDataQoS().reliable());
+    _impl->_frame_name = gazebo_ros::SensorFrameID(*_parent, *sdf);
+    _impl->_pub = _impl->_ros_node->create_publisher<sensor_msgs::msg::PointCloud2>(curr_scan_topic, pub_qos);
+ 
 
     raySensor = _parent;
     auto sensor_pose = raySensor->Pose();
@@ -67,7 +130,7 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     scanPub = node->Advertise<msgs::LaserScanStamped>(_parent->Topic(), 50);
     aviaInfos.clear();
     convertDataToRotateInfo(datas, aviaInfos);
-    ROS_INFO_STREAM("scan info size:" << aviaInfos.size());
+    RCLCPP_INFO_STREAM(_impl->_ros_node->get_logger(), "scan info size:" << aviaInfos.size());
     maxPointSize = aviaInfos.size();
 
     RayPlugin::Load(_parent, sdfPtr);
@@ -86,8 +149,8 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
     if (downSample < 1) {
         downSample = 1;
     }
-    ROS_INFO_STREAM("sample:" << samplesStep);
-    ROS_INFO_STREAM("downsample:" << downSample);
+    RCLCPP_INFO_STREAM(_impl->_ros_node->get_logger(), "sample:" << samplesStep);
+    RCLCPP_INFO_STREAM(_impl->_ros_node->get_logger(), "downsample:" << downSample);
     rayShape->RayShapes().reserve(samplesStep / downSample);
     rayShape->Load(sdfPtr);
     rayShape->Init();
@@ -126,8 +189,8 @@ void LivoxPointsPlugin::OnNewLaserScans() {
         auto verticle_min = VerticalAngleMin().Radian();
         auto verticle_incre = VerticalAngleResolution();
 
-        sensor_msgs::PointCloud scan_point;
-        scan_point.header.stamp = ros::Time::now();
+        sensor_msgs::msg::PointCloud scan_point;
+        scan_point.header.stamp = _impl->_ros_node->get_clock()->now();
         scan_point.header.frame_id = raySensor->Name();
         auto &scan_points = scan_point.points;
 
@@ -170,8 +233,10 @@ void LivoxPointsPlugin::OnNewLaserScans() {
             //}
         }
         if (scanPub && scanPub->HasConnections()) scanPub->Publish(laserMsg);
-        rosPointPub.publish(scan_point);
-        ros::spinOnce();
+        sensor_msgs::msg::PointCloud2 rosmsg;
+        sensor_msgs::convertPointCloudToPointCloud2(scan_point, rosmsg);
+        rosmsg.header = scan_point.header;
+        _impl->_pub->publish(rosmsg);
     }
 }
 
@@ -333,16 +398,23 @@ double LivoxPointsPlugin::VerticalAngleResolution() const {
 }
 void LivoxPointsPlugin::SendRosTf(const ignition::math::Pose3d &pose, const std::string &father_frame,
                                   const std::string &child_frame) {
-    if (!tfBroadcaster) {
-        tfBroadcaster.reset(new tf::TransformBroadcaster);
-    }
-    tf::Transform tf;
+//    if (!tfBroadcaster) {
+//        tfBroadcaster.reset(new tf::TransformBroadcaster);
+//    }
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.frame_id = raySensor->ParentName();
+    tf.child_frame_id = raySensor->Name();
+    tf.header.stamp = _impl->_ros_node->get_clock()->now();
     auto rot = pose.Rot();
     auto pos = pose.Pos();
-    tf.setRotation(tf::Quaternion(rot.X(), rot.Y(), rot.Z(), rot.W()));
-    tf.setOrigin(tf::Vector3(pos.X(), pos.Y(), pos.Z()));
-    tfBroadcaster->sendTransform(
-        tf::StampedTransform(tf, ros::Time::now(), raySensor->ParentName(), raySensor->Name()));
+    tf.transform.rotation.w = rot.W();
+    tf.transform.rotation.x = rot.X();
+    tf.transform.rotation.y = rot.Y();
+    tf.transform.rotation.z = rot.Z();
+    tf.transform.translation.x = pos.X();
+    tf.transform.translation.y = pos.Y();
+    tf.transform.translation.z = pos.Z();
+    _impl->_tf_bro->sendTransform(tf);
 }
 
 }

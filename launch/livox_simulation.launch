@@ -1,16 +1,15 @@
 <?xml version="1.0"?>
 <launch>
-  <arg name="world" default="$(find livox_laser_simulation)/worlds/standardrobots_factory.world" />
-  <arg name="livox_sensor" default="$(find livox_laser_simulation)/urdf/livox_avia.xacro" />
+  <arg name="world" default="$(find-pkg-share livox_laser_simulation)/worlds/standardrobots_factory.world" />
+  <arg name="livox_sensor" default="$(find-pkg-share livox_laser_simulation)/urdf/livox_avia.xacro" />
 
-  <include file="$(find gazebo_ros)/launch/empty_world.launch">
-	<arg name="world_name" value="$(arg world)"/> <arg name="paused" 
-	value="false"/> <arg name="use_sim_time" value="true"/> <arg 
-	name="gui" value="true"/> <arg name="headless" value="false"/> <arg 
-	name="debug" value="false"/> <arg name="verbose" value="true"/>
+  <set_env name="GAZEBO_RESOURCE_PATH" value="/usr/share/gazebo-11"/>
+  <include file="$(find-pkg-share gazebo_ros)/launch/gzserver.launch.py">
+    <arg name="world" value="$(var world)"/>
   </include>
-  
-  <param name="sensor_description" command="$(find xacro)/xacro --inorder $(arg livox_sensor)" />
-  <node name="spawn_urdf" pkg="gazebo_ros" type="spawn_model" args="-urdf -model livox_lidar -param sensor_description" />
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find livox_laser_simulation)/rviz/livox_simulation.rviz"/>
+  <include file="$(find-pkg-share gazebo_ros)/launch/gzclient.launch.py">
+  </include>
+
+  <node name="spawn_urdf" pkg="gazebo_ros" exec="spawn_entity.py" args="-f $(command 'bash -c \'xacro $(var livox_sensor) > /tmp/livox_sensor.urdf; echo -n /tmp/livox_sensor.urdf\'') -entity livox_lidar" />
+  <!--<node name="rviz" pkg="rviz" type="rviz" args="-d $(find livox_laser_simulation)/rviz/livox_simulation.rviz"/>-->
 </launch>
